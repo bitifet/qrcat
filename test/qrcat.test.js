@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -154,7 +155,8 @@ test('processInput uses CRLF when writing to a terminal', async () => {
 test('CLI --version and --help work without reading stdin', () => {
   const version = spawnSync(process.execPath, [BIN, '--version'], { encoding: 'utf8' });
   assert.equal(version.status, 0);
-  assert.equal(version.stdout.trim(), '0.0.1');
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(version.stdout.trim(), pkg.version);
 
   const help = spawnSync(process.execPath, [BIN, '--help'], { encoding: 'utf8' });
   assert.equal(help.status, 0);

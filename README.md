@@ -14,8 +14,9 @@ $ # Or let qrcat run the command in a pseudo-terminal for you
 $ qrcat -c "npm publish"
 ```
 
-> **Note:** some interactive commands do not work "as is" and need special
-> redirection or a pseudo-terminal. See
+> **Note:** some interactive commands do not work with a simple pipe and need
+> special redirection or a pseudo-terminal. Use `qrcat -c <command>` for such
+> cases instead. See
 > [Interactive commands and output streams](#interactive-commands-and-output-streams)
 > for more information.
 
@@ -24,8 +25,6 @@ $ qrcat -c "npm publish"
 ```bash
 npm install -g qrcat
 ```
-
-Or run from a checkout with `npm install` followed by `node bin/qrcat.js` (or `npm link`).
 
 ## Usage
 
@@ -42,55 +41,30 @@ qrcat --version
 
 ### Interactive commands and output streams
 
-qrcat reads **stdin only**. A plain `|` connects stdout, while `2> >(qrcat)` sends
-only stderr. Commands may write different URLs to different streams. For
-example, `npm publish` writes its initial publishing notice to stderr, but its
-web-auth URL to stdout. Thus `npm publish 2> >(qrcat)` can show a QR for the
-registry notice but not the auth URL.
+qrcat reads **stdin only**, and a plain `|` only pipes the command's stdout.
+Interactive commands are trickier: they may write URLs to different streams,
+and redirecting their output can change how they behave (for example, npm only
+runs its interactive web-auth flow when stdout is a TTY).
 
-Redirecting stdout directly can also change command behavior: npm only runs its
-interactive web-auth flow when stdout is a TTY. `npm publish > >(qrcat)` makes
-stdout a pipe, and can make npm exit with `EOTP` instead of starting that flow.
-
-The simplest way to capture both streams through a pseudo-terminal is to let
-qrcat do it with `-c` (requires the util-linux `script` utility, present on
-most Linux systems):
+The recommended way to run them is `-c`, which executes the command inside a
+pseudo-terminal and processes its output directly (requires the util-linux
+`script` utility, present on most Linux systems):
 
 ```bash
 qrcat -c "npm publish"
 ```
 
-qrcat runs the command with its TTY checks intact, prints QR codes for its
-output as it arrives, and restores the terminal settings when the command
-exits or is interrupted (so you should not need the `stty sane` dance below).
+qrcat keeps the command's TTY checks intact, prints QR codes for its output as
+it arrives, and restores your terminal settings when the command exits or is
+interrupted, so Ctrl+C is safe.
 
-The equivalent manual approach, wrapping the command with util-linux `script`
-yourself, is:
+For non-interactive commands, ordinary pipes or process substitution are
+simpler; choose the stream(s) that actually contain the URLs. If `-c` is not
+available or does not fit your case, the
+[Appendix](#appendix-manual-workarounds-for-interactive-commands) explains what
+`-c` does and provides equivalent manual commands.
 
-```bash
-(
-  trap 'stty sane' EXIT
-  script -qefc 'npm publish' /dev/null | qrcat
-)
-```
-
-This is useful for other interactive commands too. For non-interactive commands,
-ordinary pipes or process substitution are simpler; choose the stream(s) that
-actually contain the URLs. Process substitution (`> >(qrcat)`) requires bash or
-zsh and is not POSIX `sh`.
-
-#### Caveat: restore the terminal after Ctrl+C
-
-On some systems, interrupting `script` with Ctrl+C can leave the outer terminal
-in raw mode. You may stop seeing typed input, and Ctrl+C may no longer interrupt
-the next command. Recover with:
-
-```bash
-stty sane
-```
-
-The example above runs `script` in a subshell with an `EXIT` trap to restore
-terminal settings automatically, including when interrupted.
+### Output handling notes
 
 qrcat emits newline-terminated lines as soon as they arrive. It also flushes an
 unterminated line after 100 ms of input inactivity, which supports interactive
@@ -108,7 +82,50 @@ they need a terminal with truecolor and `▀` support.
 ```bash
 npm install
 npm test          # node:test suite
+npm link .        # Install locally for testing in your terminal
 ```
+
+## Appendix: manual workarounds for interactive commands
+
+`qrcat -c "cmd"` is roughly equivalent to wrapping the command with util-linux
+`script` and piping it through qrcat:
+
+```bash
+(
+  trap 'stty sane' EXIT
+  script -qefc 'cmd' /dev/null | qrcat
+)
+```
+
+`script` runs the command inside a pseudo-terminal, so the command keeps its
+TTYs while its combined stdout and stderr flow into qrcat.
+
+The `trap` restores the outer terminal settings because interrupting `script`
+with Ctrl+C can leave them in raw mode: you may stop seeing typed input, and
+Ctrl+C may no longer interrupt the next command. Recover manually with:
+
+```bash
+stty sane
+```
+
+If you prefer to capture a single stream, process substitution connects it to
+qrcat without touching the other one:
+
+```bash
+some-command 2> >(qrcat)   # capture stderr only
+some-command > >(qrcat)    # capture stdout only
+```
+
+Beware that a plain `|` only pipes stdout, and `some-command 2>&1 | qrcat`
+merges both streams into a pipe. Interactive commands can behave differently
+when their stdout is not a TTY: npm, for instance, exits with `EOTP` instead of
+starting its web-auth flow.
+
+Platform notes:
+
+- Process substitution (`> >(qrcat)`) requires bash or zsh; it is not POSIX `sh`.
+- The `script -qefc` flags used by `-c` are util-linux's (Linux). BSD/macOS
+  `script` uses different flags, so `-c` is currently Linux-oriented.
 
 ## License
 
