@@ -2,7 +2,6 @@
 
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import readline from 'node:readline';
 import QRCode from 'qrcode';
 
 const RESET = '\x1b[0m';
@@ -17,6 +16,7 @@ const URL_RE = /https?:\/\/[^\s<>"'`\x1b]+/gi;
 const TRAILING_PUNCT_RE = /[.,;:!?)\]}'">]+$/;
 
 const DEFAULT_OPTIONS = { errorCorrectionLevel: 'M', quietZone: 4 };
+const IDLE_FLUSH_MS = 100;
 
 /** Remove terminal escape sequences (colours, OSC 8 links, etc.). */
 export function stripAnsi(text) {
@@ -86,12 +86,102 @@ export function formatLine(line, options = {}) {
   return line + blocks.join('') + '\n';
 }
 
+/**
+ * Process input as it arrives. Complete lines are emitted immediately; an
+ * unterminated line is emitted after a short idle period so interactive tools
+ * that write a URL without a final newline can still produce a QR promptly.
+ */
+export function processInput(input, output = process.stdout, idleFlushMs = IDLE_FLUSH_MS) {
+  input.setEncoding('utf8');
+
+  return new Promise((resolve, reject) => {
+    let pending = '';
+    let timer;
+    let previousWasCR = false;
+    let skipNextDelimiter = false;
+
+    const clearTimer = () => {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+    };
+
+    const lineEnding = output.isTTY ? '\r\n' : '\n';
+    const emitLine = (line) =>
+      output.write((formatLine(line) + '\n').replace(/\n/g, lineEnding));
+
+    const onError = (error) => {
+      clearTimer();
+      reject(error);
+    };
+
+    const flushIdle = () => {
+      timer = undefined;
+      if (!pending) return;
+      try {
+        emitLine(pending);
+        pending = '';
+        // The idle flush supplies the line ending; don't emit an extra empty
+        // line if the input's actual delimiter arrives later.
+        skipNextDelimiter = true;
+      } catch (error) {
+        onError(error);
+      }
+    };
+
+    const onData = (chunk) => {
+      clearTimer();
+      try {
+        for (const char of chunk) {
+          if (char === '\n' && previousWasCR) {
+            previousWasCR = false;
+            continue;
+          }
+
+          previousWasCR = false;
+          if (char === '\n' || char === '\r') {
+            if (skipNextDelimiter) {
+              skipNextDelimiter = false;
+            } else {
+              emitLine(pending);
+              pending = '';
+            }
+            previousWasCR = char === '\r';
+            continue;
+          }
+
+          skipNextDelimiter = false;
+          pending += char;
+        }
+
+        if (pending) timer = setTimeout(flushIdle, idleFlushMs);
+      } catch (error) {
+        onError(error);
+      }
+    };
+
+    const onEnd = () => {
+      clearTimer();
+      try {
+        if (pending) emitLine(pending);
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    };
+
+    input.on('data', onData);
+    input.once('end', onEnd);
+    input.once('error', onError);
+  });
+}
+
 function printHelp() {
   process.stdout.write(
     'qcat - add QR codes for URLs in terminal output\n\n' +
       'Usage: command | qcat\n\n' +
       'Reads stdin line by line, echoes each line unchanged, and prints a QR\n' +
-      'code right after any line containing an http(s) URL.\n\n' +
+      'code right after any line containing an http(s) URL. Unterminated lines\n' +
+      'are flushed after 100 ms of input inactivity.\n\n' +
       'Options:\n' +
       '  -h, --help     show this help\n' +
       '  -v, --version  show version\n',
@@ -115,10 +205,7 @@ async function main() {
     throw err;
   });
 
-  const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-  for await (const line of rl) {
-    process.stdout.write(formatLine(line) + '\n');
-  }
+  await processInput(process.stdin);
 }
 
 function isMainModule() {

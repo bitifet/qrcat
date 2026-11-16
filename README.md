@@ -7,8 +7,11 @@ qcat is a terminal filter that detects URLs in your terminal output and generate
 **Example:**
 
 ```bash
-$ # Publish to npm and scan the auth link with your phone
-$ npm publish 2> >(qcat)
+$ # Capture a terminal session, including both stdout and stderr
+$ (
+$   trap 'stty sane' EXIT
+$   script -qefc 'npm publish' /dev/null | qcat
+$ )
 ```
 
 ## Install
@@ -31,32 +34,50 @@ qcat --help
 qcat --version
 ```
 
-### Caveat: which stream carries the URL?
+### Interactive commands and output streams
 
-qcat reads **stdin only**, and a plain `|` pipes **stdout only**. Some commands
-(notably `npm publish`, whose notices and auth link go to stderr) therefore
-produce no QR code, even though pasting the same text into a file and running
-`cat file.txt | qcat` works.
+qcat reads **stdin only**. A plain `|` connects stdout, while `2> >(qcat)` sends
+only stderr. Commands may write different URLs to different streams. For
+example, `npm publish` writes its initial publishing notice to stderr, but its
+web-auth URL to stdout. Thus `npm publish 2> >(qcat)` can show a QR for the
+registry notice but not the auth URL.
 
-**Recommended: process substitution** (bash/zsh). Send the stream that carries
-the URL to qcat without turning the command into a pipeline, so its interactive
-prompts and terminal behaviour are left alone:
+Redirecting stdout directly can also change command behavior: npm only runs its
+interactive web-auth flow when stdout is a TTY. `npm publish > >(qcat)` makes
+stdout a pipe, and can make npm exit with `EOTP` instead of starting that flow.
+
+On Linux with util-linux `script`, capture both streams through a pseudo-terminal
+so the command still sees a TTY while qcat receives its output:
 
 ```bash
-npm publish 2> >(qcat)   # stderr: notices, auth links, errors
-npm login   > >(qcat)   # stdout
+(
+  trap 'stty sane' EXIT
+  script -qefc 'npm publish' /dev/null | qcat
+)
 ```
 
-Use `2> >(qcat)` for commands that write to stderr and `> >(qcat)` for commands
-that write to stdout. Prefer one consistent form for both rather than mixing it
-with pipes.
+This is useful for other interactive commands too. For non-interactive commands,
+ordinary pipes or process substitution are simpler; choose the stream(s) that
+actually contain the URLs. Process substitution (`> >(qcat)`) requires bash or
+zsh and is not POSIX `sh`.
 
-`cmd 2>&1 | qcat` also works for simple non-interactive commands, but it merges
-**both** streams into the pipe, which can break interactive prompts or change
-how the command detects a terminal. If a command stops interacting correctly,
-use the process-substitution form instead.
+#### Caveat: restore the terminal after Ctrl+C
 
-> Process substitution requires bash or zsh; it is not POSIX `sh`.
+On some systems, interrupting `script` with Ctrl+C can leave the outer terminal
+in raw mode. You may stop seeing typed input, and Ctrl+C may no longer interrupt
+the next command. Recover with:
+
+```bash
+stty sane
+```
+
+The example above runs `script` in a subshell with an `EXIT` trap to restore
+terminal settings automatically, including when interrupted.
+
+qcat emits newline-terminated lines as soon as they arrive. It also flushes an
+unterminated line after 100 ms of input inactivity, which supports interactive
+prompts that write partial lines. This idle flush may split a line if a program
+pauses for longer than 100 ms while writing it.
 
 ANSI colour codes are stripped before URL detection, so coloured output works,
 including URLs split by colour sequences and OSC 8 hyperlinks.
@@ -78,4 +99,3 @@ npm test          # node:test suite
 ## Keywords
 
 filter – cat – url – cli – terminal
-

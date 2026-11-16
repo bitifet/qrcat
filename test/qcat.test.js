@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import QRCode from 'qrcode';
 
-import { findUrls, formatLine, renderQr, stripAnsi } from '../bin/qcat.js';
+import { findUrls, formatLine, processInput, renderQr, stripAnsi } from '../bin/qcat.js';
 
 const BIN = fileURLToPath(new URL('../bin/qcat.js', import.meta.url));
 
@@ -107,6 +108,47 @@ test('CLI echoes input and appends a QR after a URL line', () => {
   assert.match(result.stdout, /see https:\/\/example\.com\n\n/);
   assert.match(result.stdout, /▀/);
   assert.match(result.stdout, /last line\n$/);
+});
+
+test('processInput emits unterminated URL lines after a short idle period', async () => {
+  const input = new PassThrough();
+  const output = [];
+  const writeTarget = { write: (chunk) => output.push(chunk) };
+  const done = processInput(input, writeTarget, 25);
+  const url = 'https://www.npmjs.com/auth/cli/example';
+
+  input.write('Authenticate your account at:\n');
+  assert.ok(output.join('').includes('Authenticate your account at:\n'));
+  input.write(url.slice(0, 24));
+  input.write(url.slice(24)); // chunks need not align with URL boundaries
+
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const whileInputOpen = output.join('');
+  assert.ok(whileInputOpen.includes(renderQr(url)));
+
+  // The real delimiter arrives after our idle flush; it must not add a blank
+  // line or cause the same URL to be rendered a second time.
+  input.write('\nPress ENTER to open in the browser...\n');
+  input.end();
+  await done;
+
+  const finalOutput = output.join('');
+  assert.equal(finalOutput.match(/\x1b\[0m/g).length, renderQr(url).split('\n').length);
+  assert.match(finalOutput, /Press ENTER to open in the browser\.\.\.\n$/);
+});
+
+test('processInput uses CRLF when writing to a terminal', async () => {
+  const input = new PassThrough();
+  const output = [];
+  const writeTarget = { isTTY: true, write: (chunk) => output.push(chunk) };
+  const done = processInput(input, writeTarget, 25);
+
+  input.end('URL https://example.test\n');
+  await done;
+
+  const rendered = output.join('');
+  assert.ok(rendered.includes('URL https://example.test\r\n\r\n'));
+  assert.doesNotMatch(rendered.replace(/\r\n/g, ''), /\n/);
 });
 
 test('CLI --version and --help work without reading stdin', () => {
