@@ -3,6 +3,8 @@ qrcat - Add QR codes for urls in your terminal output
 
 qrcat is a terminal filter that detects URLs in your terminal output and generates additional rows with QR codes for those URLs. This allows you to easily scan the QR codes with your phone or other device to quickly access the URLs.
 
+![`qrcat --help | qrcat --tiny` in the kitty terminal: a QR code pointing to https://www.npmjs.com/package/qrcat — yes, the QR code in this screenshot scans.](assets/qrcat-tiny-kitty.png)
+
 **Example:**
 
 ```bash

@@ -6,6 +6,7 @@
 ## Layout & commands
 - Single implementation file: `bin/qrcat.js` (CLI with shebang, exported helpers `findUrls`, `renderQr`, `formatLine`, `detectColorLevel`, `sextantGlyph`, `octantGlyph`). `test/qrcat.test.js` uses `node:test`.
 - `npm install` installs the only runtime dep (`qrcode`, pinned). `npm test` runs the suite. There is no build, lint, typecheck, or formatter.
+- `assets/` holds images embedded in the README (e.g. the kitty `--tiny` screenshot); it is not in the npm tarball (`files: ["bin"]`) — npm serves README images from the GitHub repo, which is why the image paths stay relative.
 - For a locally linked CLI use `npm link`; `npm pack --dry-run` shows what ships (`files: ["bin"]`).
 - The CLI only runs when invoked directly; the main-module check uses `realpathSync` on `process.argv[1]` because npm bin shims are symlinks.
 - `qrcat -c "cmd"` spawns `script -qefc <cmd> /dev/null` (util-linux; BSD/macOS `script` flags differ), processes the PTY's merged output, forwards SIGINT/SIGTERM to the child, and restores the outer terminal with saved `stty -g` (fallback `stty sane`) in a `finally` block. POSIX only; errors clearly if `script` is missing.

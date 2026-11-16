@@ -1,6 +1,6 @@
 {
   "name": "qrcat",
-  "version": "0.0.2",
+  "version": "1.0.0",
   "description": "Output filter to add QR codes to URLs",
   "keywords": [
     "QR",
