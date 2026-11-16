@@ -5,9 +5,9 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import QRCode from 'qrcode';
 
-import { findUrls, formatLine, processInput, renderQr, stripAnsi } from '../bin/qcat.js';
+import { findUrls, formatLine, processInput, renderQr, stripAnsi } from '../bin/qrcat.js';
 
-const BIN = fileURLToPath(new URL('../bin/qcat.js', import.meta.url));
+const BIN = fileURLToPath(new URL('../bin/qrcat.js', import.meta.url));
 
 test('findUrls extracts http(s) URLs and trims trailing punctuation', () => {
   assert.deepEqual(findUrls('visit https://example.com/a?b=1.'), ['https://example.com/a?b=1']);
@@ -158,5 +158,5 @@ test('CLI --version and --help work without reading stdin', () => {
 
   const help = spawnSync(process.execPath, [BIN, '--help'], { encoding: 'utf8' });
   assert.equal(help.status, 0);
-  assert.match(help.stdout, /Usage: command \| qcat/);
+  assert.match(help.stdout, /Usage: command \| qrcat/);
 });

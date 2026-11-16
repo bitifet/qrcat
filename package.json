@@ -1,5 +1,5 @@
 {
-  "name": "qcat",
+  "name": "qrcat",
   "version": "0.0.1",
   "description": "Output filter to add QR codes to URLs",
   "keywords": [
@@ -10,20 +10,20 @@
     "cli",
     "terminal"
   ],
-  "homepage": "https://github.com/bitifet/qcat#readme",
+  "homepage": "https://github.com/bitifet/qrcat#readme",
   "bugs": {
-    "url": "https://github.com/bitifet/qcat/issues"
+    "url": "https://github.com/bitifet/qrcat/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bitifet/qcat.git"
+    "url": "git+https://github.com/bitifet/qrcat.git"
   },
   "license": "MIT",
   "author": "Joan Miquel Torres <joanmi@gmail.com>",
   "type": "module",
-  "main": "bin/qcat.js",
+  "main": "bin/qrcat.js",
   "bin": {
-    "qcat": "bin/qcat.js"
+    "qrcat": "bin/qrcat.js"
   },
   "files": [
     "bin"

@@ -177,8 +177,8 @@ export function processInput(input, output = process.stdout, idleFlushMs = IDLE_
 
 function printHelp() {
   process.stdout.write(
-    'qcat - add QR codes for URLs in terminal output\n\n' +
-      'Usage: command | qcat\n\n' +
+    'qrcat - add QR codes for URLs in terminal output\n\n' +
+      'Usage: command | qrcat\n\n' +
       'Reads stdin line by line, echoes each line unchanged, and prints a QR\n' +
       'code right after any line containing an http(s) URL. Unterminated lines\n' +
       'are flushed after 100 ms of input inactivity.\n\n' +
@@ -219,7 +219,7 @@ function isMainModule() {
 
 if (isMainModule()) {
   main().catch((err) => {
-    process.stderr.write(`qcat: ${err.message}\n`);
+    process.stderr.write(`qrcat: ${err.message}\n`);
     process.exitCode = 1;
   });
 }
