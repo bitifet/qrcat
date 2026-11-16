@@ -8,6 +8,7 @@
 - `npm install` installs the only runtime dep (`qrcode`, pinned). `npm test` runs the suite. There is no build, lint, typecheck, or formatter.
 - For a locally linked CLI use `npm link`; `npm pack --dry-run` shows what ships (`files: ["bin"]`).
 - The CLI only runs when invoked directly; the main-module check uses `realpathSync` on `process.argv[1]` because npm bin shims are symlinks.
+- `qrcat -c "cmd"` spawns `script -qefc <cmd> /dev/null` (util-linux; BSD/macOS `script` flags differ), processes the PTY's merged output, forwards SIGINT/SIGTERM to the child, and restores the outer terminal with saved `stty -g` (fallback `stty sane`) in a `finally` block. POSIX only; errors clearly if `script` is missing.
 
 ## QR rendering (non-obvious)
 - `QRCode.create(url, { errorCorrectionLevel: 'M' })` returns the **raw symbol matrix, with no quiet zone**. `renderQr` adds the required 4-module white border itself (`quietZone` option).

@@ -2,6 +2,7 @@
 
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { spawn, execFileSync } from 'node:child_process';
 import QRCode from 'qrcode';
 
 const RESET = '\x1b[0m';
@@ -178,14 +179,84 @@ export function processInput(input, output = process.stdout, idleFlushMs = IDLE_
 function printHelp() {
   process.stdout.write(
     'qrcat - add QR codes for URLs in terminal output\n\n' +
-      'Usage: command | qrcat\n\n' +
-      'Reads stdin line by line, echoes each line unchanged, and prints a QR\n' +
-      'code right after any line containing an http(s) URL. Unterminated lines\n' +
-      'are flushed after 100 ms of input inactivity.\n\n' +
+      'Usage: command | qrcat\n' +
+      '       qrcat -c "command"\n\n' +
+      'qrcat reads the output of a command and prints a scannable QR code for\n' +
+      'every http(s) URL it finds, so you can open the URL with your phone\n' +
+      'instead of copying it by hand:\n\n' +
+      '  $ npm login | qrcat\n\n' +
+      'Some interactive commands do not work "as is" and need special\n' +
+      'redirection or a pseudo-terminal. With -c, qrcat runs the command in a\n' +
+      'pseudo-terminal for you and prints its QR codes directly:\n\n' +
+      '  $ qrcat -c "npm publish"\n\n' +
+      'Check the docs for details:\n\n' +
+      '  https://www.npmjs.com/package/qrcat\n\n' +
+      'Tip: run `qrcat --help | qrcat` and get a QR code to the docs.\n\n' +
       'Options:\n' +
+      '  -c, --command  run the given command in a pseudo-terminal and process\n' +
+      '                 its output (requires the `script` utility)\n' +
       '  -h, --help     show this help\n' +
       '  -v, --version  show version\n',
   );
+}
+
+/**
+ * Run `command` inside a pseudo-terminal (via the `script` utility) so the
+ * command keeps its TTY while qrcat processes its combined output, and restore
+ * the outer terminal settings on the way out (util-linux `script` can leave
+ * them in raw mode when interrupted).
+ */
+async function runCommand(command) {
+  let savedTermios = null;
+  if (process.stdin.isTTY) {
+    try {
+      savedTermios = execFileSync('stty', ['-g'], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        encoding: 'utf8',
+      }).trim();
+    } catch {
+      savedTermios = null; // best effort: fall back to `stty sane` below
+    }
+  }
+
+  const restore = () => {
+    if (!process.stdin.isTTY) return;
+    try {
+      execFileSync('stty', [savedTermios ?? 'sane'], { stdio: ['ignore', 'ignore', 'ignore'] });
+    } catch {
+      // Nothing sensible left to try; the outer shell can still `stty sane`.
+    }
+  };
+
+  const child = spawn('script', ['-qefc', command, '/dev/null'], {
+    stdio: ['inherit', 'pipe', 'inherit'],
+  });
+
+  let childError = null;
+  child.on('error', (error) => {
+    childError = error;
+  });
+
+  const onSignal = (signal) => {
+    child.kill(signal);
+  };
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
+
+  try {
+    await processInput(child.stdout);
+  } finally {
+    process.off('SIGINT', onSignal);
+    process.off('SIGTERM', onSignal);
+    restore();
+  }
+
+  const exitCode = await new Promise((resolve) => {
+    if (childError) return resolve(null);
+    child.on('close', (code) => resolve(code));
+  });
+  if (childError) throw childError;
+  if (exitCode !== 0) process.exitCode = exitCode ?? 1;
 }
 
 async function main() {
@@ -204,6 +275,18 @@ async function main() {
     if (err.code === 'EPIPE') process.exit(0);
     throw err;
   });
+
+  const commandIndex = args.findIndex((arg) => arg === '-c' || arg === '--command');
+  if (commandIndex !== -1) {
+    const command = args[commandIndex + 1];
+    if (!command || command.startsWith('-')) {
+      process.stderr.write('qrcat: -c/--command requires a command string\n');
+      process.exitCode = 1;
+      return;
+    }
+    await runCommand(command);
+    return;
+  }
 
   await processInput(process.stdin);
 }

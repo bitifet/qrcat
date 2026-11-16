@@ -7,12 +7,17 @@ qrcat is a terminal filter that detects URLs in your terminal output and generat
 **Example:**
 
 ```bash
-$ # Capture a terminal session, including both stdout and stderr
-$ (
-$   trap 'stty sane' EXIT
-$   script -qefc 'npm publish' /dev/null | qrcat
-$ )
+$ # Login to npm in your computer by scanning a QR code with your phone
+$ npm login | qrcat
+
+$ # Or let qrcat run the command in a pseudo-terminal for you
+$ qrcat -c "npm publish"
 ```
+
+> **Note:** some interactive commands do not work "as is" and need special
+> redirection or a pseudo-terminal. See
+> [Interactive commands and output streams](#interactive-commands-and-output-streams)
+> for more information.
 
 ## Install
 
@@ -30,6 +35,7 @@ Multiple URLs on one line each get their own QR code.
 
 ```bash
 command | qrcat
+qrcat -c "command"
 qrcat --help
 qrcat --version
 ```
@@ -46,8 +52,20 @@ Redirecting stdout directly can also change command behavior: npm only runs its
 interactive web-auth flow when stdout is a TTY. `npm publish > >(qrcat)` makes
 stdout a pipe, and can make npm exit with `EOTP` instead of starting that flow.
 
-On Linux with util-linux `script`, capture both streams through a pseudo-terminal
-so the command still sees a TTY while qrcat receives its output:
+The simplest way to capture both streams through a pseudo-terminal is to let
+qrcat do it with `-c` (requires the util-linux `script` utility, present on
+most Linux systems):
+
+```bash
+qrcat -c "npm publish"
+```
+
+qrcat runs the command with its TTY checks intact, prints QR codes for its
+output as it arrives, and restores the terminal settings when the command
+exits or is interrupted (so you should not need the `stty sane` dance below).
+
+The equivalent manual approach, wrapping the command with util-linux `script`
+yourself, is:
 
 ```bash
 (

@@ -159,4 +159,22 @@ test('CLI --version and --help work without reading stdin', () => {
   const help = spawnSync(process.execPath, [BIN, '--help'], { encoding: 'utf8' });
   assert.equal(help.status, 0);
   assert.match(help.stdout, /Usage: command \| qrcat/);
+  assert.match(help.stdout, /npmjs\.com\/package\/qrcat/);
+});
+
+test('-c runs a command in a PTY and processes its output', () => {
+  const result = spawnSync(
+    process.execPath,
+    [BIN, '-c', 'node -e "console.log(\'hello https://example.test\')"'],
+    { encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /hello https:\/\/example\.test/);
+  assert.match(result.stdout, /▀/);
+});
+
+test('-c without a command argument fails with a clear message', () => {
+  const result = spawnSync(process.execPath, [BIN, '-c'], { encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /-c\/--command requires a command string/);
 });
