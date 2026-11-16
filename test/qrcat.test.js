@@ -6,9 +6,35 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import QRCode from 'qrcode';
 
-import { findUrls, formatLine, processInput, renderQr, stripAnsi } from '../bin/qrcat.js';
+import {
+  detectColorLevel,
+  findUrls,
+  formatLine,
+  octantGlyph,
+  processInput,
+  renderQr,
+  sextantGlyph,
+  stripAnsi,
+} from '../bin/qrcat.js';
 
 const BIN = fileURLToPath(new URL('../bin/qrcat.js', import.meta.url));
+
+const COLOR_LEVELS = ['24bit', '256', '16'];
+
+/** Decode an SGR code to its QR role: true = dark ink, false = light paper. */
+function decodeColor(code, kind) {
+  const dark = {
+    fg: ['38;2;0;0;0', '38;5;16', '30'],
+    bg: ['48;2;0;0;0', '48;5;16', '40'],
+  };
+  const light = {
+    fg: ['38;2;255;255;255', '38;5;231', '97'],
+    bg: ['48;2;255;255;255', '48;5;231', '107'],
+  };
+  for (const seq of dark[kind]) if (code.includes(seq)) return true;
+  for (const seq of light[kind]) if (code.includes(seq)) return false;
+  throw new Error(`unrecognized colour code ${JSON.stringify(code)} (${kind})`);
+}
 
 test('findUrls extracts http(s) URLs and trims trailing punctuation', () => {
   assert.deepEqual(findUrls('visit https://example.com/a?b=1.'), ['https://example.com/a?b=1']);
@@ -54,38 +80,102 @@ test('renderQr packs two module rows per terminal row with colour and quiet zone
   assert.ok(!lines[0].includes('\x1b[38;2;0;0;0m'));
 });
 
-test('renderQr output round-trips to the source matrix with quiet zone', () => {
+test('renderQr output round-trips to the source matrix (all palettes)', () => {
   const url = 'https://example.com';
   const qr = QRCode.create(url, { errorCorrectionLevel: 'M' });
   const quietZone = 4;
   const size = qr.modules.size + 2 * quietZone;
-  const rendered = renderQr(url).split('\n');
+  const expected = (y, x) => {
+    const r = y - quietZone;
+    const c = x - quietZone;
+    return r >= 0 && c >= 0 && r < qr.modules.size && c < qr.modules.size
+      ? qr.modules.get(r, c) === 1
+      : false;
+  };
 
-  const actual = [];
-  rendered.forEach((line, rowIndex) => {
-    const cells = line.split('▀').slice(0, -1);
-    for (let x = 0; x < cells.length; x++) {
-      const cell = cells[x];
-      const fg = cell.match(/\x1b\[38;2;(\d+);/)[1];
-      const bg = cell.match(/\x1b\[48;2;(\d+);/)[1];
-      actual[2 * rowIndex] ??= [];
-      actual[2 * rowIndex][x] = fg === '0';
-      actual[2 * rowIndex + 1] ??= [];
-      actual[2 * rowIndex + 1][x] = bg === '0';
-    }
-  });
+  for (const colors of COLOR_LEVELS) {
+    const lines = renderQr(url, { colors }).split('\n');
+    assert.equal(lines.length, Math.ceil(size / 2), `rows for ${colors}`);
 
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const r = y - quietZone;
-      const c = x - quietZone;
-      const expected =
-        r >= 0 && c >= 0 && r < qr.modules.size && c < qr.modules.size
-          ? qr.modules.get(r, c) === 1
-          : false;
-      assert.equal(actual[y][x], expected, `module at ${y},${x}`);
+    const actual = [];
+    lines.forEach((line, rowPair) => {
+      line.split('▀').slice(0, -1).forEach((cell, x) => {
+        const codes = cell.match(/\x1b\[[0-9;]*m/g);
+        actual[2 * rowPair] ??= [];
+        actual[2 * rowPair][x] = decodeColor(codes[0], 'fg');
+        actual[2 * rowPair + 1] ??= [];
+        actual[2 * rowPair + 1][x] = decodeColor(codes[1], 'bg');
+      });
+    });
+
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        assert.equal(actual[y][x], expected(y, x), `module at ${y},${x} (${colors})`);
+      }
     }
   }
+});
+
+function roundTripTest(packing, rowsPerCell) {
+  const url = 'https://example.com';
+  const qr = QRCode.create(url, { errorCorrectionLevel: 'M' });
+  const quietZone = 4;
+  const size = qr.modules.size + 2 * quietZone;
+  const expected = (y, x) => {
+    const r = y - quietZone;
+    const c = x - quietZone;
+    return r >= 0 && c >= 0 && r < qr.modules.size && c < qr.modules.size
+      ? qr.modules.get(r, c) === 1
+      : false;
+  };
+
+  for (const colors of COLOR_LEVELS) {
+    const lines = renderQr(url, { colors, packing }).split('\n');
+    assert.equal(lines.length, Math.ceil(size / rowsPerCell), `rows for ${colors}`);
+
+    const actual = [];
+    lines.forEach((line, row) => {
+      const cells = [...line.matchAll(/\x1b\[[0-9;]*m\x1b\[[0-9;]*m./gu)].map((m) => m[0]);
+      assert.equal(cells.length, Math.ceil(size / 2), `cols for ${colors}`);
+
+      for (let col = 0; col < cells.length; col++) {
+        const codes = cells[col].match(/\x1b\[[0-9;]*m/g);
+        // Mosaic cells use constant colours: dark ink over light paper.
+        assert.equal(decodeColor(codes[0], 'fg'), true, `fg for ${colors}`);
+        assert.equal(decodeColor(codes[1], 'bg'), false, `bg for ${colors}`);
+
+        const glyph = cells[col].replace(/\x1b\[[0-9;]*m/g, '');
+        const masks = packing === 'sextant' ? 64 : 256;
+        const toGlyph = packing === 'sextant' ? sextantGlyph : octantGlyph;
+        let mask = 0;
+        for (let m = 0; m < masks; m++) if (toGlyph(m) === glyph) mask = m;
+        for (let sub = 0; sub < rowsPerCell * 2; sub++) {
+          const y = rowsPerCell * row + Math.floor(sub / 2);
+          const x = 2 * col + (sub % 2);
+          actual[y] ??= [];
+          actual[y][x] = Boolean(mask & (1 << sub));
+        }
+      }
+    });
+
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        assert.equal(actual[y][x], expected(y, x), `module at ${y},${x} (${colors})`);
+      }
+    }
+  }
+}
+
+test('sextant packing round-trips to the source matrix and is smaller', () => roundTripTest('sextant', 3));
+
+test('octant packing round-trips to the source matrix and is smaller', () => roundTripTest('octant', 4));
+
+test('detectColorLevel picks the palette from the environment', () => {
+  assert.equal(detectColorLevel({ COLORTERM: 'truecolor', TERM: 'xterm-256color' }), '24bit');
+  assert.equal(detectColorLevel({ COLORTERM: '24bit' }), '24bit');
+  assert.equal(detectColorLevel({ TERM: 'screen-256color' }), '256');
+  assert.equal(detectColorLevel({ TERM: 'xterm' }), '16');
+  assert.equal(detectColorLevel({}), '16');
 });
 
 test('formatLine leaves URL-free lines untouched', () => {
@@ -162,6 +252,52 @@ test('CLI --version and --help work without reading stdin', () => {
   assert.equal(help.status, 0);
   assert.match(help.stdout, /Usage: command \| qrcat/);
   assert.match(help.stdout, /npmjs\.com\/package\/qrcat/);
+});
+
+test('CLI --small renders sextant QR codes', () => {
+  const result = spawnSync(process.execPath, [BIN, '--small'], {
+    input: 'see https://example.test\n',
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /[\u{1FB00}-\u{1FB3B}]/u);
+  assert.doesNotMatch(result.stdout, /[\u{1CD00}-\u{1CDE5}]/u);
+});
+
+test('CLI --tiny renders octant QR codes', () => {
+  const result = spawnSync(process.execPath, [BIN, '--tiny'], {
+    input: 'see https://example.test\n',
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /[\u{1CD00}-\u{1CDE5}]/u);
+  assert.doesNotMatch(result.stdout, /[\u{1FB00}-\u{1FB3B}]/u);
+});
+
+test('CLI rejects valued --small/--tiny and junk --quiet-zone', () => {
+  for (const args of [['--small=sextant'], ['--tiny=octant'], ['--quiet-zone=foo'], ['--quiet-zone=9']]) {
+    const result = spawnSync(process.execPath, [BIN, ...args], {
+      input: '',
+      encoding: 'utf8',
+    });
+    assert.notEqual(result.status, 0, `args ${JSON.stringify(args)}`);
+    assert.match(result.stderr, /qrcat:/, `args ${JSON.stringify(args)}`);
+  }
+});
+
+test('CLI --quiet-zone shrinks the default QR', () => {
+  const qrLines = (flags) => {
+    const result = spawnSync(process.execPath, [BIN, ...flags], {
+      input: 'https://example.test\n',
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.split('\n').filter((line) => line.includes('▀')).length;
+  };
+  // https://example.test is a version-2 symbol (25 modules): 33 and 29 with
+  // the quiet zone, so ceil(size / 2) gives 17 and 15 half-block rows.
+  assert.equal(qrLines([]), 17);
+  assert.equal(qrLines(['--quiet-zone=2']), 15);
 });
 
 test('-c runs a command in a PTY and processes its output', () => {

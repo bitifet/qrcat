@@ -6,10 +6,31 @@ import { spawn, execFileSync } from 'node:child_process';
 import QRCode from 'qrcode';
 
 const RESET = '\x1b[0m';
-const FG_DARK = '\x1b[38;2;0;0;0m';
-const FG_LIGHT = '\x1b[38;2;255;255;255m';
-const BG_DARK = '\x1b[48;2;0;0;0m';
-const BG_LIGHT = '\x1b[48;2;255;255;255m';
+
+// Palettes for the two QR "ink" colours: pure black modules on pure white.
+// 256-colour indexes 16/231 are fixed black/white in the xterm palette; the
+// 16-colour fallback uses the terminal theme's black/white.
+const PALETTES = {
+  '24bit': {
+    fgDark: '\x1b[38;2;0;0;0m', fgLight: '\x1b[38;2;255;255;255m',
+    bgDark: '\x1b[48;2;0;0;0m', bgLight: '\x1b[48;2;255;255;255m',
+  },
+  256: {
+    fgDark: '\x1b[38;5;16m', fgLight: '\x1b[38;5;231m',
+    bgDark: '\x1b[48;5;16m', bgLight: '\x1b[48;5;231m',
+  },
+  16: {
+    fgDark: '\x1b[30m', fgLight: '\x1b[97m',
+    bgDark: '\x1b[40m', bgLight: '\x1b[107m',
+  },
+};
+
+/** Pick the best colour palette the environment supports. */
+export function detectColorLevel(env = process.env) {
+  if (env.COLORTERM === 'truecolor' || env.COLORTERM === '24bit') return '24bit';
+  if ((env.TERM ?? '').includes('256color')) return '256';
+  return '16';
+}
 
 // CSI, OSC (BEL or ST terminated), other single-byte escapes, and C1 CSI.
 const ANSI_RE = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()#][\x20-\x7e]|[@-_])|\x9b[0-?]*[ -/]*[@-~]/g;
@@ -18,6 +39,55 @@ const TRAILING_PUNCT_RE = /[.,;:!?)\]}'">]+$/;
 
 const DEFAULT_OPTIONS = { errorCorrectionLevel: 'M', quietZone: 4 };
 const IDLE_FLUSH_MS = 100;
+
+// Block Sextants (Unicode 13, U+1FB00..U+1FB3B): one glyph per 2x3 module
+// group; filled subcells = dark modules. Subcells are numbered in reading
+// order (1 2 / 3 4 / 5 6), so bit (n-1) of the mask = subcell n. The block
+// skips masks 21, 42 and 63 (left column, right column, full) because they
+// duplicate U+258C, U+2590 and U+2588. Mapping verified against the Unicode
+// character names (UCD UnicodeData.txt).
+const SEXTANT_BASE = 0x1fb00;
+const SEXTANT_SKIPS = [21, 42, 63];
+const SEXTANT_EQUIVALENTS = new Map([
+  [0, ' '], [21, '▌'], [42, '▐'], [63, '█'],
+]);
+
+export function sextantGlyph(mask) {
+  if (SEXTANT_EQUIVALENTS.has(mask)) return SEXTANT_EQUIVALENTS.get(mask);
+  const skip = SEXTANT_SKIPS.filter((s) => s < mask).length;
+  return String.fromCodePoint(SEXTANT_BASE + mask - 1 - skip);
+}
+
+// Block Octants (Unicode 16, U+1CD00..U+1CDE5): one glyph per 2x4 module
+// group, with filled subcells representing dark modules. Subcells are numbered
+// in reading order (1 2 / 3 4 / 5 6 / 7 8), so bit (n - 1) of the mask is
+// subcell n. The block skips the 25 combinations that already have equivalent
+// single characters elsewhere: the quadrant/half blocks, the quarter bands and
+// their halves (the latter encoded as "Block elements" in the Supplement).
+// Mapping verified against the Unicode character names (UCD UnicodeData.txt).
+const OCTANT_BASE = 0x1cd00;
+const OCTANT_SKIPS = [
+  1, 2, 3, 5, 10, 15, 20, 40, 63, 64, 80, 85, 90, 95,
+  128, 160, 165, 170, 175, 192, 240, 245, 250, 252, 255,
+];
+const OCTANT_EQUIVALENTS = new Map([
+  [0, ' '],
+  // Quadrant and half-block combinations (U+2580..U+259F).
+  [5, '▘'], [10, '▝'], [15, '▀'], [80, '▖'], [85, '▌'],
+  [90, '▞'], [95, '▛'], [160, '▗'], [165, '▚'], [170, '▐'],
+  [175, '▜'], [240, '▄'], [245, '▙'], [250, '▟'], [255, '█'],
+  // Quarter bands (U+1FB82, U+2582, U+1FB85, U+2586), their middle halves
+  // (U+1FBE6, U+1FBE7) and corner halves (U+1CEA8, U+1CEAB, U+1CEA3, U+1CEA0).
+  [1, '\u{1CEA8}'], [2, '\u{1CEAB}'], [3, '\u{1FB82}'],
+  [20, '\u{1FBE6}'], [40, '\u{1FBE7}'], [63, '\u{1FB85}'],
+  [64, '\u{1CEA3}'], [128, '\u{1CEA0}'], [192, '▂'], [252, '▆'],
+]);
+
+export function octantGlyph(mask) {
+  if (OCTANT_EQUIVALENTS.has(mask)) return OCTANT_EQUIVALENTS.get(mask);
+  const skip = OCTANT_SKIPS.filter((s) => s < mask).length;
+  return String.fromCodePoint(OCTANT_BASE + mask - 1 - skip);
+}
 
 /** Remove terminal escape sequences (colours, OSC 8 links, etc.). */
 export function stripAnsi(text) {
@@ -50,12 +120,22 @@ export function findUrls(text) {
 }
 
 /**
- * Render a URL as a QR using Unicode upper-half blocks: the foreground colour
- * is the top module, the background colour the bottom one. Two module rows are
- * packed into each terminal row, which keeps the code roughly square.
+ * Render a URL as a QR over `quietZone`-bordered modules. Packings:
+ * - `half` (default): Unicode upper-half blocks; the foreground colour is the
+ *   top module, the background one the bottom, so two module rows are packed
+ *   into each terminal row and the code stays roughly square.
+ * - `sextant`: Unicode Block Sextants (2x3 modules per cell, ~3x smaller
+ *   area); filled subcells are the dark modules, so every cell uses the dark
+ *   colour as foreground and the light one as background. Needs a terminal
+ *   with sextant support; modules end up slightly taller than wide.
+ * - `octant`: Unicode Block Octants (2x4 modules per cell, ~4x smaller area);
+ *   square modules for the usual 1:2 cell aspect, but needs a terminal with
+ *   octant support (newer than sextants).
  */
 export function renderQr(url, options = {}) {
   const { errorCorrectionLevel, quietZone } = { ...DEFAULT_OPTIONS, ...options };
+  const { packing = 'half', colors = '24bit' } = options;
+  const palette = PALETTES[colors];
   const qr = QRCode.create(url, { errorCorrectionLevel });
   const size = qr.modules.size + 2 * quietZone;
 
@@ -66,13 +146,34 @@ export function renderQr(url, options = {}) {
     return qr.modules.get(r, c) === 1;
   };
 
+  if (packing === 'sextant' || packing === 'octant') {
+    const rowsPerCell = packing === 'sextant' ? 3 : 4;
+    const glyph = packing === 'sextant' ? sextantGlyph : octantGlyph;
+    const cols = Math.ceil(size / 2);
+    const lines = [];
+    for (let row = 0; row < Math.ceil(size / rowsPerCell); row++) {
+      let line = '';
+      for (let col = 0; col < cols; col++) {
+        let mask = 0;
+        for (let sub = 0; sub < rowsPerCell * 2; sub++) {
+          if (isDark(rowsPerCell * row + Math.floor(sub / 2), 2 * col + (sub % 2))) {
+            mask |= 1 << sub;
+          }
+        }
+        line += palette.fgDark + palette.bgLight + glyph(mask);
+      }
+      lines.push(line + RESET);
+    }
+    return lines.join('\n');
+  }
+
   const lines = [];
   for (let row = 0; row < size; row += 2) {
     let line = '';
     for (let col = 0; col < size; col++) {
       const top = isDark(row, col);
       const bottom = row + 1 < size ? isDark(row + 1, col) : false;
-      line += (top ? FG_DARK : FG_LIGHT) + (bottom ? BG_DARK : BG_LIGHT) + '▀';
+      line += (top ? palette.fgDark : palette.fgLight) + (bottom ? palette.bgDark : palette.bgLight) + '▀';
     }
     lines.push(line + RESET);
   }
@@ -92,7 +193,7 @@ export function formatLine(line, options = {}) {
  * unterminated line is emitted after a short idle period so interactive tools
  * that write a URL without a final newline can still produce a QR promptly.
  */
-export function processInput(input, output = process.stdout, idleFlushMs = IDLE_FLUSH_MS) {
+export function processInput(input, output = process.stdout, idleFlushMs = IDLE_FLUSH_MS, formatOptions = {}) {
   input.setEncoding('utf8');
 
   return new Promise((resolve, reject) => {
@@ -108,7 +209,7 @@ export function processInput(input, output = process.stdout, idleFlushMs = IDLE_
 
     const lineEnding = output.isTTY ? '\r\n' : '\n';
     const emitLine = (line) =>
-      output.write((formatLine(line) + '\n').replace(/\n/g, lineEnding));
+      output.write((formatLine(line, formatOptions) + '\n').replace(/\n/g, lineEnding));
 
     const onError = (error) => {
       clearTimer();
@@ -195,6 +296,12 @@ function printHelp() {
       'Options:\n' +
       '  -c, --command  run the given command in a pseudo-terminal and process\n' +
       '                 its output (requires the `script` utility)\n' +
+      '  --small        smaller QRs using Unicode sextant characters (~1/3\n' +
+      '                 area; needs a terminal with sextant support)\n' +
+      '  --tiny         even smaller QRs using Unicode octant characters\n' +
+      '                 (~1/4 area, square; needs octant support)\n' +
+      '  --quiet-zone=N quiet zone thickness in modules (0-8, default 4;\n' +
+      '                 below 4 is off-spec but scanners cope)\n' +
       '  -h, --help     show this help\n' +
       '  -v, --version  show version\n',
   );
@@ -206,7 +313,7 @@ function printHelp() {
  * the outer terminal settings on the way out (util-linux `script` can leave
  * them in raw mode when interrupted).
  */
-async function runCommand(command) {
+async function runCommand(command, formatOptions) {
   let savedTermios = null;
   if (process.stdin.isTTY) {
     try {
@@ -244,7 +351,7 @@ async function runCommand(command) {
   process.on('SIGTERM', onSignal);
 
   try {
-    await processInput(child.stdout);
+    await processInput(child.stdout, process.stdout, IDLE_FLUSH_MS, formatOptions);
   } finally {
     process.off('SIGINT', onSignal);
     process.off('SIGTERM', onSignal);
@@ -257,6 +364,34 @@ async function runCommand(command) {
   });
   if (childError) throw childError;
   if (exitCode !== 0) process.exitCode = exitCode ?? 1;
+}
+
+function parseFormatOptions(args) {
+  const options = {
+    colors: detectColorLevel(),
+    packing: 'half',
+    quietZone: DEFAULT_OPTIONS.quietZone,
+  };
+  for (const arg of args) {
+    if (arg === '--small') {
+      options.packing = 'sextant';
+    } else if (arg === '--tiny') {
+      options.packing = 'octant';
+    } else if (arg.startsWith('--small=') || arg.startsWith('--tiny=')) {
+      process.stderr.write('qrcat: --small and --tiny take no value (they are separate options)\n');
+      process.exitCode = 1;
+      return null;
+    } else if (arg.startsWith('--quiet-zone=')) {
+      const value = Number(arg.slice('--quiet-zone='.length));
+      if (!Number.isInteger(value) || value < 0 || value > 8) {
+        process.stderr.write('qrcat: --quiet-zone expects an integer between 0 and 8\n');
+        process.exitCode = 1;
+        return null;
+      }
+      options.quietZone = value;
+    }
+  }
+  return options;
 }
 
 async function main() {
@@ -277,6 +412,8 @@ async function main() {
   });
 
   const commandIndex = args.findIndex((arg) => arg === '-c' || arg === '--command');
+  const formatOptions = parseFormatOptions(args);
+  if (!formatOptions) return;
   if (commandIndex !== -1) {
     const command = args[commandIndex + 1];
     if (!command || command.startsWith('-')) {
@@ -284,11 +421,11 @@ async function main() {
       process.exitCode = 1;
       return;
     }
-    await runCommand(command);
+    await runCommand(command, formatOptions);
     return;
   }
 
-  await processInput(process.stdin);
+  await processInput(process.stdin, process.stdout, IDLE_FLUSH_MS, formatOptions);
 }
 
 function isMainModule() {
