@@ -1,6 +1,10 @@
 qrcat - Add QR codes for urls in your terminal output
 -----------------------------------------------------
 
+[![npm version](https://img.shields.io/npm/v/qrcat)](https://www.npmjs.com/package/qrcat)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Dependencies: 1](https://img.shields.io/badge/dependencies-1-green)](https://www.npmjs.com/package/qrcat?activeTab=dependencies)
+
 qrcat is a terminal filter that detects URLs in your terminal output and generates additional rows with QR codes for those URLs. This allows you to easily scan the QR codes with your phone or other device to quickly access the URLs.
 
 ![`qrcat --help | qrcat --tiny` in the kitty terminal: a QR code pointing to https://www.npmjs.com/package/qrcat — yes, the QR code in this screenshot scans.](assets/qrcat-tiny-kitty.png)
@@ -43,6 +47,21 @@ command | qrcat --quiet-zone=2   # thinner border, works everywhere
 qrcat --help
 qrcat --version
 ```
+
+### How is this different from `qrencode` or `qr`?
+
+`qrencode` (and Python's `qr`) are one-shot encoders: you hand them the exact
+text to encode. qrcat is a **filter**: pipe any command's output through it and
+every `http(s)` URL that goes by gets a QR code printed right below its line,
+with the output itself left untouched.
+
+- URL detection survives ANSI colours and OSC 8 hyperlinks and tolerates
+  trailing punctuation, so real-world tool output just works.
+- `qrcat -c` runs interactive commands (npm login, tailscale ssh, ...) inside a
+  pseudo-terminal, so their web-auth URLs reach qrcat without breaking the
+  command's TTY checks.
+- `--small`, `--tiny` and `--quiet-zone` trade size for terminal support in a
+  documented compatibility ladder; colours are auto-detected for any terminal.
 
 ### Interactive commands and output streams
 
